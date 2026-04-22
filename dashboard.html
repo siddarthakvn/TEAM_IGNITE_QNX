@@ -1,0 +1,1030 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GestSense — Command Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@300;400;600;700&family=Barlow:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --ink:#020509;
+  --deep:#050d18;
+  --void:#07111f;
+  --glass:rgba(10,22,42,0.85);
+  --rim:rgba(255,255,255,0.06);
+  --mist:rgba(255,255,255,0.03);
+  --text:#e8f4ff;
+  --sub:#5a8aaa;
+  --dim:#2a4a60;
+
+  --amb:#ff2347;
+  --pol:#1a8fff;
+  --fire:#ff6600;
+  --sos:#9933ff;
+
+  --neon:#00e5ff;
+  --lime:#00ff88;
+  --gold:#ffcc00;
+
+  --f-display:'Bebas Neue',sans-serif;
+  --f-mono:'JetBrains Mono',monospace;
+  --f-body:'Barlow',sans-serif;
+}
+html,body,#root{width:100%;min-height:100vh;background:var(--ink);color:var(--text);font-family:var(--f-body);overflow-x:hidden}
+
+/* ── Scanline overlay ── */
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.08) 2px,rgba(0,0,0,0.08) 4px);
+  animation:scanmove 8s linear infinite;}
+@keyframes scanmove{0%{background-position:0 0}100%{background-position:0 400px}}
+
+/* ── Noise texture ── */
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9998;opacity:0.025;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-size:200px 200px;}
+
+/* ── Animations ── */
+@keyframes pulse-ring{0%,100%{transform:scale(1);opacity:0.6}50%{transform:scale(1.04);opacity:1}}
+@keyframes alarm-flash{0%,100%{opacity:1}50%{opacity:0.2}}
+@keyframes slide-up{from{transform:translateY(60px);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes slide-in-right{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+@keyframes fade-in{from{opacity:0}to{opacity:1}}
+@keyframes ticker{from{transform:translateX(100%)}to{transform:translateX(-100%)}}
+@keyframes radar-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes glow-breath{0%,100%{text-shadow:0 0 20px currentColor,0 0 40px currentColor}50%{text-shadow:0 0 40px currentColor,0 0 80px currentColor,0 0 120px currentColor}}
+@keyframes ripple{0%{transform:scale(0.8);opacity:1}100%{transform:scale(2.5);opacity:0}}
+@keyframes counter-up{from{transform:translateY(12px);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes modal-in{from{transform:scale(0.88) translateY(20px);opacity:0}to{transform:scale(1) translateY(0);opacity:1}}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:var(--deep)}
+::-webkit-scrollbar-thumb{background:var(--dim);border-radius:2px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback} = React;
+
+/* ════════════════════════════════════════════════
+   CONSTANTS
+════════════════════════════════════════════════ */
+const WS_URL = (() => {
+  const p = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return p + '//' + location.hostname + ':8765';
+})();
+
+const DEPTS = {
+  AMBULANCE: {
+    key:'AMBULANCE', label:'MEDICAL', sub:'AMBULANCE & EMERGENCY CARE',
+    icon:'🚑', color:'#ff2347', glow:'rgba(255,35,71,0.4)',
+    gradient:'linear-gradient(135deg,#3d0010 0%,#1a0008 100%)',
+    accent:'#ff2347', lightAccent:'#ff6680',
+    hospital:'City General Hospital', unit:'Emergency Medical Unit',
+    contact:'+91 102', channel:'MED-ALPHA',
+    desc:'Trauma response, cardiac arrest, mass casualty incidents',
+    bg:'radial-gradient(ellipse at 30% 40%, rgba(255,35,71,0.12) 0%, transparent 60%)'
+  },
+  POLICE: {
+    key:'POLICE', label:'POLICE', sub:'SECURITY & LAW ENFORCEMENT',
+    icon:'🚔', color:'#1a8fff', glow:'rgba(26,143,255,0.4)',
+    gradient:'linear-gradient(135deg,#001540 0%,#000d26 100%)',
+    accent:'#1a8fff', lightAccent:'#5ab0ff',
+    hospital:'Central Police Station', unit:'Rapid Response Force',
+    contact:'+91 100', channel:'SEC-BRAVO',
+    desc:'Security threats, crowd control, law enforcement dispatch',
+    bg:'radial-gradient(ellipse at 70% 40%, rgba(26,143,255,0.12) 0%, transparent 60%)'
+  },
+  FIRE: {
+    key:'FIRE', label:'FIRE', sub:'FIRE & DISASTER CONTROL',
+    icon:'🔥', color:'#ff6600', glow:'rgba(255,102,0,0.4)',
+    gradient:'linear-gradient(135deg,#3d1800 0%,#1a0a00 100%)',
+    accent:'#ff6600', lightAccent:'#ff9944',
+    hospital:'District Fire Station', unit:'Hazmat & Rescue Team',
+    contact:'+91 101', channel:'FIRE-CHARLIE',
+    desc:'Structure fires, chemical spills, disaster rescue operations',
+    bg:'radial-gradient(ellipse at 50% 20%, rgba(255,102,0,0.15) 0%, transparent 60%)'
+  },
+  DISTRESS: {
+    key:'DISTRESS', label:'DISTRESS', sub:'SEARCH & RESCUE OPERATIONS',
+    icon:'🆘', color:'#9933ff', glow:'rgba(153,51,255,0.4)',
+    gradient:'linear-gradient(135deg,#200040 0%,#100020 100%)',
+    accent:'#9933ff', lightAccent:'#bb66ff',
+    hospital:'Rescue Coordination Centre', unit:'Search & Rescue Delta',
+    contact:'+91 112', channel:'SOS-DELTA',
+    desc:'Trapped persons, missing individuals, humanitarian crises',
+    bg:'radial-gradient(ellipse at 60% 60%, rgba(153,51,255,0.12) 0%, transparent 60%)'
+  }
+};
+
+/* ════════════════════════════════════════════════
+   UTILITY
+════════════════════════════════════════════════ */
+function useInterval(fn, ms) {
+  const ref = useRef(fn);
+  useEffect(() => { ref.current = fn; }, [fn]);
+  useEffect(() => {
+    const t = setInterval(() => ref.current(), ms);
+    return () => clearInterval(t);
+  }, [ms]);
+}
+
+/* ════════════════════════════════════════════════
+   CLOCK COMPONENT
+════════════════════════════════════════════════ */
+function Clock() {
+  const [t, setT] = useState(new Date());
+  useInterval(() => setT(new Date()), 1000);
+  const hh = String(t.getHours()).padStart(2,'0');
+  const mm = String(t.getMinutes()).padStart(2,'0');
+  const ss = String(t.getSeconds()).padStart(2,'0');
+  const date = t.toLocaleDateString('en-IN',{weekday:'short',day:'2-digit',month:'short',year:'numeric'});
+  return (
+    <div style={{textAlign:'right'}}>
+      <div style={{fontFamily:'var(--f-display)',fontSize:42,lineHeight:1,
+        color:'var(--neon)',letterSpacing:4,
+        textShadow:'0 0 20px rgba(0,229,255,0.5),0 0 40px rgba(0,229,255,0.2)'}}>
+        {hh}<span style={{animation:'alarm-flash 1s step-end infinite',opacity:1}}>:</span>{mm}<span style={{animation:'alarm-flash 1s step-end infinite',animationDelay:'0.5s'}}>:</span>{ss}
+      </div>
+      <div style={{fontFamily:'var(--f-mono)',fontSize:11,color:'var(--sub)',letterSpacing:2,marginTop:2}}>{date}</div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════
+   RADAR WIDGET
+════════════════════════════════════════════════ */
+function RadarWidget({active}) {
+  return (
+    <div style={{position:'relative',width:80,height:80,flexShrink:0}}>
+      {[1,0.66,0.33].map((s,i) => (
+        <div key={i} style={{
+          position:'absolute',top:'50%',left:'50%',
+          width:80*s,height:80*s,
+          transform:'translate(-50%,-50%)',
+          borderRadius:'50%',
+          border:`1px solid rgba(0,229,255,${0.1+i*0.08})`,
+        }}/>
+      ))}
+      <div style={{
+        position:'absolute',top:'50%',left:'50%',
+        width:80,height:80,transform:'translate(-50%,-50%)',
+        borderRadius:'50%',overflow:'hidden',
+      }}>
+        <div style={{
+          position:'absolute',top:0,left:0,width:'100%',height:'100%',
+          background:'conic-gradient(rgba(0,229,255,0.35) 0deg, transparent 60deg)',
+          animation:'radar-spin 2.5s linear infinite',
+          transformOrigin:'50% 50%',
+        }}/>
+      </div>
+      {active && (
+        <div style={{
+          position:'absolute',top:'50%',left:'50%',
+          width:12,height:12,
+          transform:'translate(-50%,-50%)',
+          borderRadius:'50%',
+          background:'var(--neon)',
+          boxShadow:'0 0 12px var(--neon)',
+        }}>
+          <div style={{position:'absolute',inset:-6,borderRadius:'50%',
+            border:'1px solid var(--neon)',
+            animation:'ripple 1.5s ease-out infinite'}}/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════
+   DEPARTMENT TILE  (main grid)
+════════════════════════════════════════════════ */
+function DeptTile({dept, alert, onClick}) {
+  const [hovered, setHovered] = useState(false);
+  const hasAlert = !!alert && !alert.acked;
+  const d = DEPTS[dept];
+
+  return (
+    <div
+      onClick={() => onClick(dept)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        position:'relative',
+        cursor:'pointer',
+        background: hasAlert
+          ? d.gradient
+          : `radial-gradient(ellipse at 40% 30%, rgba(255,255,255,0.02) 0%, transparent 60%), var(--void)`,
+        border:`1px solid ${hasAlert ? d.color : 'rgba(255,255,255,0.05)'}`,
+        borderRadius:16,
+        padding:'32px 28px',
+        overflow:'hidden',
+        transition:'all 0.4s cubic-bezier(0.34,1.56,0.64,1)',
+        transform: hovered
+          ? 'translateY(-6px) scale(1.015)'
+          : hasAlert ? 'translateY(-3px)' : 'translateY(0)',
+        boxShadow: hovered
+          ? `0 24px 60px ${d.glow}, 0 0 0 1px ${d.color}`
+          : hasAlert
+          ? `0 12px 40px ${d.glow}, 0 0 0 1px ${d.color}60`
+          : '0 4px 20px rgba(0,0,0,0.4)',
+        animation: hasAlert ? 'pulse-ring 2s ease-in-out infinite' : 'none',
+        minHeight:280,
+        display:'flex', flexDirection:'column',
+      }}
+    >
+      {/* BG glow */}
+      <div style={{
+        position:'absolute',inset:0,
+        background: hovered || hasAlert ? d.bg : 'transparent',
+        transition:'opacity 0.4s',
+        pointerEvents:'none',
+      }}/>
+
+      {/* Top accent bar */}
+      <div style={{
+        position:'absolute',top:0,left:0,right:0,height: hasAlert ? 4 : 2,
+        background:`linear-gradient(90deg, ${d.color}, ${d.lightAccent}, ${d.color})`,
+        backgroundSize:'200% 100%',
+        opacity: hasAlert ? 1 : 0.4,
+        transition:'all 0.3s',
+        animation: hasAlert ? 'ticker 2s linear infinite' : 'none',
+      }}/>
+
+      {/* Status badge */}
+      <div style={{
+        position:'absolute',top:16,right:16,
+        padding:'4px 10px', borderRadius:20,
+        fontFamily:'var(--f-mono)',fontSize:10,letterSpacing:2,
+        background: hasAlert ? `${d.color}22` : alert?.acked ? 'rgba(0,255,136,0.1)' : 'rgba(255,255,255,0.04)',
+        border:`1px solid ${hasAlert ? d.color+'66' : alert?.acked ? '#00ff8844' : 'rgba(255,255,255,0.08)'}`,
+        color: hasAlert ? d.color : alert?.acked ? 'var(--lime)' : 'var(--sub)',
+        animation: hasAlert ? 'alarm-flash 1s step-end infinite' : 'none',
+      }}>
+        {hasAlert ? '⚡ ACTIVE' : alert?.acked ? '✓ RESOLVED' : '● STANDBY'}
+      </div>
+
+      {/* Icon */}
+      <div style={{
+        fontSize:64,
+        lineHeight:1,
+        marginBottom:20,
+        filter: hovered || hasAlert ? 'drop-shadow(0 0 20px currentColor)' : 'none',
+        transition:'filter 0.3s',
+        animation: hasAlert ? 'glow-breath 2s ease-in-out infinite' : 'none',
+      }}>{d.icon}</div>
+
+      {/* Title */}
+      <div style={{
+        fontFamily:'var(--f-display)',
+        fontSize:52,
+        lineHeight:1,
+        letterSpacing:2,
+        color: hasAlert ? d.color : hovered ? d.lightAccent : 'var(--text)',
+        textShadow: hasAlert || hovered ? `0 0 30px ${d.glow}` : 'none',
+        transition:'all 0.3s',
+        marginBottom:4,
+      }}>{d.label}</div>
+
+      <div style={{
+        fontFamily:'var(--f-mono)',fontSize:11,color:'var(--sub)',
+        letterSpacing:2,marginBottom:16,
+      }}>{d.sub}</div>
+
+      {/* Divider */}
+      <div style={{height:1,background:`linear-gradient(90deg,${d.color}44,transparent)`,marginBottom:16}}/>
+
+      {/* Info rows */}
+      <div style={{fontFamily:'var(--f-mono)',fontSize:12,color:'var(--sub)',lineHeight:2}}>
+        <div>📞 {d.contact}</div>
+        <div>📡 CH:{d.channel}</div>
+      </div>
+
+      {/* Alert preview if active */}
+      {hasAlert && (
+        <div style={{
+          marginTop:16,
+          padding:'10px 12px',
+          background:'rgba(0,0,0,0.4)',
+          border:`1px solid ${d.color}44`,
+          borderRadius:8,
+          animation:'slide-up 0.3s ease',
+        }}>
+          <div style={{fontFamily:'var(--f-mono)',fontSize:11,color:d.color,letterSpacing:1,marginBottom:4}}>ACTIVE ALERT</div>
+          <div style={{fontSize:13,fontWeight:600,color:'var(--text)'}}>{alert.alert}</div>
+          <div style={{fontFamily:'var(--f-mono)',fontSize:11,color:'var(--sub)',marginTop:4}}>
+            {alert.person} · {alert.received}
+          </div>
+        </div>
+      )}
+
+      {/* Hover CTA */}
+      <div style={{
+        marginTop:'auto',paddingTop:16,
+        fontFamily:'var(--f-mono)',fontSize:11,
+        color: hovered ? d.color : 'var(--dim)',
+        letterSpacing:2,
+        transition:'color 0.3s',
+        display:'flex',alignItems:'center',gap:6,
+      }}>
+        <span style={{
+          width:6,height:6,borderRadius:'50%',
+          background: hovered ? d.color : 'var(--dim)',
+          transition:'background 0.3s',
+          boxShadow: hovered ? `0 0 8px ${d.color}` : 'none',
+        }}/>
+        {hasAlert ? 'CLICK TO RESPOND →' : 'CLICK TO MONITOR →'}
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════
+   SENSOR BAR  (header strip)
+════════════════════════════════════════════════ */
+function SensorBar({lastAlert}) {
+  const a = lastAlert;
+  const items = [
+    {label:'TEMP', value: a ? a.temp.toFixed(1) : '--', unit:'°C', note: a?.bme_synth ? 'est' : 'live'},
+    {label:'HUM',  value: a ? a.hum.toFixed(1)  : '--', unit:'%',  note: a?.bme_synth ? 'est' : 'live'},
+    {label:'GAS',  value: a ? a.gas.toFixed(1)  : '--', unit:'kΩ', note: a?.bme_synth ? 'est' : 'live'},
+    {label:'GPS',  value: a ? `${a.lat.toFixed(4)},${a.lon.toFixed(4)}` : '--', unit:'', note: a?.gps_synth ? 'est' : 'fix'},
+  ];
+  return (
+    <div style={{
+      display:'flex',gap:1,
+      background:'var(--dim)',
+      borderRadius:10,
+      overflow:'hidden',
+      border:'1px solid rgba(255,255,255,0.06)',
+    }}>
+      {items.map(it => (
+        <div key={it.label} style={{
+          flex:1,background:'var(--void)',
+          padding:'8px 14px',
+        }}>
+          <div style={{fontFamily:'var(--f-mono)',fontSize:9,color:'var(--sub)',letterSpacing:2,marginBottom:2}}>{it.label}</div>
+          <div style={{fontFamily:'var(--f-mono)',fontSize:16,fontWeight:700,color:'var(--neon)',lineHeight:1}}>
+            {it.value}<span style={{fontSize:10,color:'var(--sub)',marginLeft:2}}>{it.unit}</span>
+          </div>
+          <div style={{fontFamily:'var(--f-mono)',fontSize:9,color:'var(--dim)',marginTop:2}}>{it.note}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════
+   DEPT DETAIL PAGE
+════════════════════════════════════════════════ */
+function DeptDetail({deptKey, alert, history, onBack, onAck}) {
+  const d = DEPTS[deptKey];
+  const [mapLoaded, setMapLoaded] = useState(false);
+  const lat  = alert?.lat  ?? 17.724161;
+  const lon  = alert?.lon  ?? 78.256725;
+  const mapUrl = `https://maps.google.com/maps?q=${lat},${lon}&z=16&output=embed`;
+  const navUrl = `https://maps.google.com/maps?q=${lat},${lon}&z=17&t=h`;
+  const deptHistory = history.filter(h => h.gesture === deptKey);
+
+  return (
+    <div style={{
+      position:'fixed',inset:0,background:'var(--ink)',zIndex:200,
+      overflow:'auto',
+      animation:'slide-in-right 0.4s cubic-bezier(0.25,0.46,0.45,0.94)',
+    }}>
+      {/* Header */}
+      <div style={{
+        position:'sticky',top:0,zIndex:10,
+        background:`linear-gradient(180deg, rgba(5,13,24,0.98) 0%, rgba(2,5,9,0.95) 100%)`,
+        borderBottom:`1px solid ${d.color}44`,
+        backdropFilter:'blur(20px)',
+        padding:'16px 28px',
+        display:'flex',alignItems:'center',gap:16,
+      }}>
+        <button onClick={onBack} style={{
+          background:'rgba(255,255,255,0.04)',
+          border:'1px solid rgba(255,255,255,0.1)',
+          color:'var(--text)',borderRadius:8,
+          padding:'8px 14px',cursor:'pointer',
+          fontFamily:'var(--f-mono)',fontSize:12,letterSpacing:1,
+          display:'flex',alignItems:'center',gap:6,
+          transition:'all 0.2s',
+        }} onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.08)'}
+           onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.04)'}>
+          ← BACK
+        </button>
+
+        <div style={{fontSize:32,lineHeight:1}}>{d.icon}</div>
+        <div>
+          <div style={{
+            fontFamily:'var(--f-display)',fontSize:28,letterSpacing:3,
+            color:d.color,textShadow:`0 0 20px ${d.glow}`,
+          }}>{d.label} DEPARTMENT</div>
+          <div style={{fontFamily:'var(--f-mono)',fontSize:11,color:'var(--sub)',letterSpacing:2}}>{d.sub}</div>
+        </div>
+
+        {alert && !alert.acked && (
+          <div style={{
+            marginLeft:'auto',
+            padding:'6px 14px',borderRadius:6,
+            background:`${d.color}22`,border:`1px solid ${d.color}66`,
+            color:d.color,fontFamily:'var(--f-mono)',fontSize:11,
+            letterSpacing:2,animation:'alarm-flash 1s step-end infinite',
+          }}>⚡ ACTIVE ALERT</div>
+        )}
+      </div>
+
+      <div style={{padding:'28px',display:'grid',gridTemplateColumns:'1fr 1fr',gap:20}}>
+
+        {/* LEFT COLUMN */}
+        <div style={{display:'flex',flexDirection:'column',gap:20}}>
+
+          {/* Alert card */}
+          {alert ? (
+            <div style={{
+              background:`linear-gradient(135deg, ${d.color}0a 0%, var(--void) 100%)`,
+              border:`1px solid ${d.color}44`,
+              borderRadius:16,padding:24,
+              animation:'slide-up 0.4s ease',
+            }}>
+              <div style={{
+                fontFamily:'var(--f-display)',fontSize:20,letterSpacing:3,
+                color:d.color,marginBottom:16,
+              }}>INCIDENT REPORT</div>
+
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+                {[
+                  ['ALERT TYPE', alert.gesture],
+                  ['PERSON', alert.person],
+                  ['TIME', alert.received],
+                  ['STATUS', alert.acked ? '✓ RESOLVED' : '⚡ ACTIVE'],
+                ].map(([k,v]) => (
+                  <div key={k} style={{
+                    background:'rgba(0,0,0,0.35)',
+                    borderRadius:8,padding:'10px 12px',
+                    border:'1px solid rgba(255,255,255,0.04)',
+                  }}>
+                    <div style={{fontFamily:'var(--f-mono)',fontSize:9,color:'var(--sub)',letterSpacing:2,marginBottom:4}}>{k}</div>
+                    <div style={{fontFamily:'var(--f-mono)',fontSize:13,fontWeight:600,
+                      color: k==='STATUS' ? (alert.acked ? 'var(--lime)' : d.color) : 'var(--text)'}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{
+                background:'rgba(0,0,0,0.35)',borderRadius:8,padding:'10px 12px',
+                border:`1px solid ${d.color}22`,marginBottom:16,
+              }}>
+                <div style={{fontFamily:'var(--f-mono)',fontSize:9,color:'var(--sub)',letterSpacing:2,marginBottom:4}}>MESSAGE</div>
+                <div style={{fontSize:15,fontWeight:700,color:d.color}}>{alert.alert}</div>
+              </div>
+
+              {/* ACK button */}
+              {!alert.acked ? (
+                <button onClick={() => onAck(alert.id, alert.gesture)} style={{
+                  width:'100%',padding:'14px',
+                  background:`linear-gradient(135deg, ${d.color}33, ${d.color}11)`,
+                  border:`2px solid ${d.color}`,
+                  borderRadius:10,color:d.color,
+                  fontFamily:'var(--f-display)',fontSize:22,letterSpacing:3,
+                  cursor:'pointer',
+                  transition:'all 0.2s',
+                  boxShadow:`0 0 20px ${d.glow}`,
+                }} onMouseEnter={e=>{e.currentTarget.style.background=`${d.color}33`;e.currentTarget.style.boxShadow=`0 0 40px ${d.glow}`}}
+                   onMouseLeave={e=>{e.currentTarget.style.background=`linear-gradient(135deg,${d.color}33,${d.color}11)`;e.currentTarget.style.boxShadow=`0 0 20px ${d.glow}`}}>
+                  ✓ ACKNOWLEDGE ALERT
+                </button>
+              ) : (
+                <div style={{
+                  textAlign:'center',padding:'14px',
+                  background:'rgba(0,255,136,0.08)',
+                  border:'1px solid rgba(0,255,136,0.3)',
+                  borderRadius:10,
+                  fontFamily:'var(--f-display)',fontSize:20,letterSpacing:3,
+                  color:'var(--lime)',
+                }}>✓ ACKNOWLEDGED — GREEN LED ON</div>
+              )}
+            </div>
+          ) : (
+            <div style={{
+              background:'var(--void)',border:'1px solid rgba(255,255,255,0.05)',
+              borderRadius:16,padding:28,textAlign:'center',
+            }}>
+              <div style={{fontSize:48,marginBottom:12}}>◌</div>
+              <div style={{fontFamily:'var(--f-display)',fontSize:22,letterSpacing:3,color:'var(--sub)'}}>NO ACTIVE ALERT</div>
+              <div style={{fontFamily:'var(--f-mono)',fontSize:11,color:'var(--dim)',marginTop:8,letterSpacing:1}}>MONITORING CHANNEL {d.channel}</div>
+            </div>
+          )}
+
+          {/* Unit info */}
+          <div style={{
+            background:'var(--void)',border:'1px solid rgba(255,255,255,0.05)',
+            borderRadius:16,padding:24,
+          }}>
+            <div style={{fontFamily:'var(--f-display)',fontSize:18,letterSpacing:3,color:'var(--sub)',marginBottom:16}}>RESPONSE UNIT</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+              {[
+                ['FACILITY', d.hospital],
+                ['UNIT',     d.unit],
+                ['CONTACT',  d.contact],
+                ['CHANNEL',  d.channel],
+              ].map(([k,v]) => (
+                <div key={k} style={{
+                  background:'rgba(255,255,255,0.02)',borderRadius:8,
+                  padding:'10px 12px',border:'1px solid rgba(255,255,255,0.04)',
+                }}>
+                  <div style={{fontFamily:'var(--f-mono)',fontSize:9,color:'var(--sub)',letterSpacing:2,marginBottom:4}}>{k}</div>
+                  <div style={{fontFamily:'var(--f-mono)',fontSize:12,color:'var(--text)',fontWeight:600}}>{v}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{
+              marginTop:12,padding:'10px 12px',
+              background:'rgba(255,255,255,0.02)',borderRadius:8,
+              border:'1px solid rgba(255,255,255,0.04)',
+            }}>
+              <div style={{fontFamily:'var(--f-mono)',fontSize:9,color:'var(--sub)',letterSpacing:2,marginBottom:4}}>JURISDICTION</div>
+              <div style={{fontSize:13,color:'var(--text)'}}>{d.desc}</div>
+            </div>
+          </div>
+
+          {/* Sensor readings */}
+          {alert && (
+            <div style={{
+              background:'var(--void)',border:'1px solid rgba(255,255,255,0.05)',
+              borderRadius:16,padding:24,
+            }}>
+              <div style={{fontFamily:'var(--f-display)',fontSize:18,letterSpacing:3,color:'var(--sub)',marginBottom:16}}>SENSOR DATA AT ALERT</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}}>
+                {[
+                  ['TEMP',{val:`${alert.temp.toFixed(1)}°C`,note:alert.bme_synth?'est':'live'}],
+                  ['HUM', {val:`${alert.hum.toFixed(1)}%`, note:alert.bme_synth?'est':'live'}],
+                  ['GAS', {val:`${alert.gas.toFixed(1)}kΩ`,note:alert.bme_synth?'est':'live'}],
+                ].map(([k,{val,note}]) => (
+                  <div key={k} style={{
+                    textAlign:'center',
+                    background:`${d.color}08`,borderRadius:10,
+                    padding:'14px 8px',border:`1px solid ${d.color}22`,
+                  }}>
+                    <div style={{fontFamily:'var(--f-mono)',fontSize:9,color:'var(--sub)',letterSpacing:2,marginBottom:6}}>{k}</div>
+                    <div style={{fontFamily:'var(--f-display)',fontSize:28,color:d.color,
+                      textShadow:`0 0 15px ${d.glow}`}}>{val}</div>
+                    <div style={{fontFamily:'var(--f-mono)',fontSize:9,color:'var(--sub)',marginTop:4}}>{note}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT COLUMN — MAP + HISTORY */}
+        <div style={{display:'flex',flexDirection:'column',gap:20}}>
+
+          {/* Map */}
+          <div style={{
+            background:'var(--void)',border:`1px solid ${d.color}33`,
+            borderRadius:16,overflow:'hidden',
+            boxShadow:`0 0 30px ${d.glow}20`,
+          }}>
+            <div style={{
+              padding:'14px 18px',
+              display:'flex',alignItems:'center',justifyContent:'space-between',
+              borderBottom:`1px solid ${d.color}22`,
+            }}>
+              <div>
+                <div style={{fontFamily:'var(--f-display)',fontSize:16,letterSpacing:3,color:d.color}}>LOCATION</div>
+                <div style={{fontFamily:'var(--f-mono)',fontSize:10,color:'var(--sub)',marginTop:2}}>
+                  {alert ? `${alert.lat.toFixed(5)}, ${alert.lon.toFixed(5)}${alert.gps_synth?' (estimated)':''}` : '17.724161, 78.256725'}
+                </div>
+              </div>
+              <a href={navUrl} target="_blank" style={{
+                padding:'8px 14px',borderRadius:8,
+                background:`${d.color}22`,border:`1px solid ${d.color}55`,
+                color:d.color,textDecoration:'none',
+                fontFamily:'var(--f-mono)',fontSize:11,letterSpacing:1,
+                display:'flex',alignItems:'center',gap:6,
+                transition:'all 0.2s',
+              }} onMouseEnter={e=>e.currentTarget.style.background=`${d.color}44`}
+                 onMouseLeave={e=>e.currentTarget.style.background=`${d.color}22`}>
+                🗺️ NAVIGATE
+              </a>
+            </div>
+            <div style={{position:'relative',height:280}}>
+              {!mapLoaded && (
+                <div style={{
+                  position:'absolute',inset:0,
+                  display:'flex',alignItems:'center',justifyContent:'center',
+                  background:'var(--void)',
+                  fontFamily:'var(--f-mono)',fontSize:12,color:'var(--sub)',letterSpacing:2,
+                }}>LOADING MAP…</div>
+              )}
+              <iframe
+                src={mapUrl}
+                width="100%" height="280"
+                style={{display:'block',border:'none',filter:'invert(90%) hue-rotate(180deg)'}}
+                onLoad={() => setMapLoaded(true)}
+                loading="lazy"
+                title="Location Map"
+              />
+            </div>
+          </div>
+
+          {/* Alert history for this dept */}
+          <div style={{
+            background:'var(--void)',border:'1px solid rgba(255,255,255,0.05)',
+            borderRadius:16,padding:20,flex:1,
+          }}>
+            <div style={{
+              fontFamily:'var(--f-display)',fontSize:18,letterSpacing:3,
+              color:'var(--sub)',marginBottom:16,
+              display:'flex',alignItems:'center',justifyContent:'space-between',
+            }}>
+              <span>INCIDENT LOG</span>
+              <span style={{fontFamily:'var(--f-mono)',fontSize:12,color:d.color}}>{deptHistory.length} RECORDS</span>
+            </div>
+            {deptHistory.length === 0 ? (
+              <div style={{textAlign:'center',padding:24,fontFamily:'var(--f-mono)',fontSize:11,color:'var(--dim)',letterSpacing:1}}>
+                NO INCIDENTS RECORDED
+              </div>
+            ) : (
+              <div style={{display:'flex',flexDirection:'column',gap:8,maxHeight:300,overflowY:'auto'}}>
+                {deptHistory.map((h,i) => (
+                  <div key={h.id||i} style={{
+                    padding:'10px 12px',
+                    background:'rgba(255,255,255,0.02)',
+                    border:`1px solid ${h.acked ? 'rgba(0,255,136,0.15)' : `${d.color}22`}`,
+                    borderRadius:8,
+                    display:'flex',alignItems:'center',gap:12,
+                  }}>
+                    <div style={{
+                      width:8,height:8,borderRadius:'50%',flexShrink:0,
+                      background: h.acked ? 'var(--lime)' : d.color,
+                      boxShadow: h.acked ? '0 0 6px var(--lime)' : `0 0 6px ${d.color}`,
+                    }}/>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:12,fontWeight:600,color:'var(--text)',marginBottom:2}}>{h.alert}</div>
+                      <div style={{fontFamily:'var(--f-mono)',fontSize:10,color:'var(--sub)'}}>{h.person} · {h.received}</div>
+                    </div>
+                    <div style={{
+                      fontFamily:'var(--f-mono)',fontSize:10,
+                      color: h.acked ? 'var(--lime)' : 'var(--gold)',
+                      padding:'2px 8px',borderRadius:4,
+                      background: h.acked ? 'rgba(0,255,136,0.08)' : 'rgba(255,204,0,0.08)',
+                      border: h.acked ? '1px solid rgba(0,255,136,0.2)' : '1px solid rgba(255,204,0,0.2)',
+                      flexShrink:0,
+                    }}>
+                      {h.acked ? 'ACKED' : 'PENDING'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════
+   TICKER
+════════════════════════════════════════════════ */
+function Ticker({alerts}) {
+  const recent = alerts.slice(-6);
+  if(recent.length === 0) return (
+    <div style={{
+      background:'var(--deep)',borderTop:'1px solid rgba(255,255,255,0.04)',
+      padding:'8px 28px',fontFamily:'var(--f-mono)',fontSize:11,
+      color:'var(--dim)',letterSpacing:2,
+    }}>◌ SYSTEM NOMINAL — AWAITING ALERTS</div>
+  );
+  return (
+    <div style={{
+      background:'var(--deep)',borderTop:'1px solid rgba(255,255,255,0.04)',
+      padding:'8px 0',overflow:'hidden',position:'relative',
+    }}>
+      <div style={{
+        display:'flex',gap:48,
+        animation:'ticker 20s linear infinite',
+        whiteSpace:'nowrap',
+        paddingLeft:'100%',
+      }}>
+        {recent.map((a,i) => {
+          const d = DEPTS[a.gesture];
+          return (
+            <span key={i} style={{fontFamily:'var(--f-mono)',fontSize:11,letterSpacing:1}}>
+              <span style={{color:d?.color}}>■ {a.gesture}</span>
+              <span style={{color:'var(--sub)'}}> — {a.alert} — {a.person} — {a.received} </span>
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════
+   MAIN APP
+════════════════════════════════════════════════ */
+function App() {
+  const [alerts, setAlerts]       = useState({});   // {gesture: alert}
+  const [history, setHistory]     = useState([]);
+  const [activeDept, setActiveDept] = useState(null); // detail view
+  const [wsStatus, setWsStatus]   = useState('CONNECTING');
+  const [totalCount, setTotalCount] = useState(0);
+  const [toasts, setToasts]       = useState([]);
+  const wsRef = useRef(null);
+
+  /* ── Toast ── */
+  const addToast = useCallback((msg, color) => {
+    const id = Date.now();
+    setToasts(t => [...t, {id, msg, color}]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000);
+  }, []);
+
+  /* ── WebSocket ── */
+  const connectWS = useCallback(() => {
+    setWsStatus('CONNECTING');
+    const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setWsStatus('CONNECTED');
+      addToast('🔗 Connected to GestSense server', '#00ff88');
+    };
+    ws.onmessage = ev => {
+      try {
+        const d = JSON.parse(ev.data);
+        if(d.type === 'alert')   handleAlert(d.payload);
+        if(d.type === 'cancel')  handleCancel(d.payload);
+        if(d.type === 'history') d.payload.forEach(a => addToHistory(a));
+        if(d.type === 'ack_ok')  handleAckOk(d.id, d.gesture);
+      } catch(e) {}
+    };
+    ws.onclose = () => {
+      setWsStatus('DISCONNECTED');
+      setTimeout(connectWS, 3000);
+    };
+    ws.onerror = () => { setWsStatus('DISCONNECTED'); };
+  }, []);
+
+  useEffect(() => { connectWS(); }, []);
+
+  /* ── Handlers ── */
+  function applyDefaults(a) {
+    a.id       = a.id       || Date.now();
+    a.received = a.received || new Date().toLocaleString('en-IN');
+    a.acked    = a.acked    ?? false;
+    a.lat      = a.lat      ?? 17.724161;
+    a.lon      = a.lon      ?? 78.256725;
+    a.gps_synth= a.gps_synth ?? 1;
+    a.temp     = a.temp     ?? 25.0;
+    a.hum      = a.hum      ?? 40.0;
+    a.gas      = a.gas      ?? 100.0;
+    a.bme_synth= a.bme_synth ?? 1;
+    return a;
+  }
+
+  function handleAlert(a) {
+    applyDefaults(a);
+    setAlerts(prev => ({...prev, [a.gesture]: a}));
+    addToHistory(a);
+    setTotalCount(c => c + 1);
+    const d = DEPTS[a.gesture] || {};
+    if (a.cascade) {
+      /* Quieter toast for cascaded departments — lets primary pop */
+      addToast(`${d.icon||'🔗'} ${a.gesture} auto-dispatched (${a.cascade_of})`, d.color||'#00e5ff');
+    } else {
+      addToast(`${d.icon||'🚨'} ${a.gesture}: ${a.alert}`, d.color||'#00e5ff');
+      flashTitle('🚨 ' + a.gesture);
+    }
+  }
+
+  /* ── CANCEL from QNX (operator fist gesture OR dashboard ACK flow) ──
+     When an incident is cancelled, stand down EVERY responder for that
+     person — the primary department AND any auto-dispatched cascade
+     (e.g. FIRE → also cancels AMBULANCE + POLICE for that same person,
+     DISTRESS → also cancels AMBULANCE + POLICE for that same person).
+
+     We match by person, not by cascade_of, because the cascade metadata
+     isn't always reliable across QNX → server → WebSocket. Clearing
+     everything for the cancelling person is the correct behaviour
+     regardless — matches how real dispatch consoles work.
+  */
+  function handleCancel(p) {
+    const cancelledGesture = p.gesture || '';
+    const cancelledPerson  = (p.person || '').trim();
+
+    setAlerts(prev => {
+      const next = {...prev};
+      for (const k of Object.keys(next)) {
+        const a = next[k];
+        if (!a || a.acked) continue;
+        const alertPerson = (a.person || '').trim();
+        /* Clear every active alert from the same person.
+           This catches the primary AND all cascaded alerts. */
+        if (!cancelledPerson || alertPerson === cancelledPerson) {
+          next[k] = {...a, acked:true, cancelled:true};
+        }
+      }
+      return next;
+    });
+
+    setHistory(prev => prev.map(a => {
+      const aPerson = (a.person || '').trim();
+      if (!cancelledPerson) {
+        return !a.acked ? {...a, acked:true, cancelled:true} : a;
+      }
+      return (aPerson === cancelledPerson && !a.acked)
+        ? {...a, acked:true, cancelled:true}
+        : a;
+    }));
+
+    const who = cancelledPerson || 'operator';
+    addToast(`🙅 ${who} cancelled ${cancelledGesture} — all units stood down`, '#ffcc00');
+  }
+
+  function addToHistory(a) {
+    applyDefaults(a);
+    setHistory(prev => {
+      if(prev.find(x => x.id === a.id)) return prev;
+      return [a, ...prev].slice(0,100);
+    });
+  }
+
+  function handleAckOk(id, gesture) {
+    setAlerts(prev => {
+      if(!prev[gesture]) return prev;
+      return {...prev, [gesture]: {...prev[gesture], acked:true}};
+    });
+    setHistory(prev => prev.map(a => a.id === id ? {...a, acked:true} : a));
+    addToast('✅ Acknowledged — Green LED ON on RPi4', '#00ff88');
+  }
+
+  function sendAck(id, gesture) {
+    if(wsRef.current?.readyState === 1)
+      wsRef.current.send(JSON.stringify({type:'ack', id, gesture}));
+    handleAckOk(id, gesture);
+  }
+
+  function flashTitle(msg) {
+    const orig = document.title; let n=0;
+    const t = setInterval(() => {
+      document.title = n++%2===0 ? msg : orig;
+      if(n>12){clearInterval(t);document.title=orig;}
+    },600);
+  }
+
+  /* ── Active alert for a dept ── */
+  const getActiveAlert  = k => alerts[k] && !alerts[k].acked ? alerts[k] : alerts[k];
+  const activeAlerts    = Object.values(alerts).filter(a => !a.acked);
+  const ackedCount      = Object.values(alerts).filter(a =>  a.acked).length;
+  const lastAlert       = history[0] || null;
+
+  const statusColor = {CONNECTED:'var(--lime)',DISCONNECTED:'var(--amb)',CONNECTING:'var(--gold)'}[wsStatus];
+
+  /* ── Detail view ── */
+  if(activeDept) {
+    return (
+      <DeptDetail
+        deptKey={activeDept}
+        alert={alerts[activeDept]}
+        history={history}
+        onBack={() => setActiveDept(null)}
+        onAck={sendAck}
+      />
+    );
+  }
+
+  /* ── Main view ── */
+  return (
+    <div style={{display:'flex',flexDirection:'column',minHeight:'100vh'}}>
+
+      {/* ── HEADER ── */}
+      <header style={{
+        background:'linear-gradient(180deg, rgba(5,13,24,0.98) 0%, rgba(2,5,9,0.94) 100%)',
+        borderBottom:'1px solid rgba(255,255,255,0.06)',
+        backdropFilter:'blur(20px)',
+        padding:'16px 28px',
+        display:'flex',alignItems:'center',gap:20,
+        flexShrink:0,
+      }}>
+        {/* Logo */}
+        <div style={{display:'flex',alignItems:'center',gap:14}}>
+          <RadarWidget active={activeAlerts.length > 0} />
+          <div>
+            <div style={{
+              fontFamily:'var(--f-display)',fontSize:28,letterSpacing:4,
+              color:'var(--neon)',
+              textShadow:'0 0 20px rgba(0,229,255,0.4)',
+              lineHeight:1,
+            }}>GESTSENSE</div>
+            <div style={{fontFamily:'var(--f-mono)',fontSize:10,color:'var(--sub)',letterSpacing:2,marginTop:2}}>
+              EMERGENCY COMMAND CENTER · Q-eHACK 2026 · TEAM IGNITE
+            </div>
+          </div>
+        </div>
+
+        {/* Counter pills */}
+        <div style={{display:'flex',gap:8,marginLeft:20}}>
+          {[
+            {label:'TOTAL',  val:totalCount,         color:'var(--neon)'},
+            {label:'ACTIVE', val:activeAlerts.length, color:'var(--amb)'},
+            {label:'ACKED',  val:ackedCount,          color:'var(--lime)'},
+          ].map(({label,val,color}) => (
+            <div key={label} style={{
+              background:'rgba(255,255,255,0.03)',
+              border:'1px solid rgba(255,255,255,0.06)',
+              borderRadius:8,padding:'6px 14px',
+              textAlign:'center',minWidth:60,
+            }}>
+              <div style={{fontFamily:'var(--f-display)',fontSize:22,color,
+                textShadow:`0 0 10px ${color}55`,
+                animation: val>0 ? 'counter-up 0.3s ease' : 'none',
+              }}>{val}</div>
+              <div style={{fontFamily:'var(--f-mono)',fontSize:9,color:'var(--sub)',letterSpacing:1}}>{label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Sensor bar */}
+        <div style={{flex:1,maxWidth:500}}>
+          <SensorBar lastAlert={lastAlert} />
+        </div>
+
+        {/* WS status + Clock */}
+        <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',alignItems:'flex-end',gap:8}}>
+          <Clock />
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <div style={{
+              width:7,height:7,borderRadius:'50%',
+              background:statusColor,
+              boxShadow:`0 0 8px ${statusColor}`,
+              animation:'blink 1.8s ease-in-out infinite',
+            }}/>
+            <span style={{fontFamily:'var(--f-mono)',fontSize:10,color:statusColor,letterSpacing:2}}>{wsStatus}</span>
+          </div>
+        </div>
+      </header>
+
+      {/* ── DEPT GRID ── */}
+      <div style={{
+        flex:1,
+        display:'grid',
+        gridTemplateColumns:'1fr 1fr 1fr 1fr',
+        gap:16,
+        padding:'24px 28px',
+      }}>
+        {Object.keys(DEPTS).map(key => (
+          <DeptTile
+            key={key}
+            dept={key}
+            alert={getActiveAlert(key)}
+            onClick={k => setActiveDept(k)}
+          />
+        ))}
+      </div>
+
+      {/* ── TICKER ── */}
+      <Ticker alerts={history} />
+
+      {/* ── TOASTS ── */}
+      <div style={{
+        position:'fixed',bottom:24,right:24,
+        display:'flex',flexDirection:'column',gap:8,
+        alignItems:'flex-end',zIndex:500,
+      }}>
+        {toasts.map(t => (
+          <div key={t.id} style={{
+            background:'rgba(7,17,31,0.96)',
+            border:'1px solid rgba(255,255,255,0.08)',
+            borderLeft:`3px solid ${t.color}`,
+            borderRadius:10,padding:'12px 16px',
+            maxWidth:320,
+            boxShadow:'0 8px 32px rgba(0,0,0,0.6)',
+            animation:'slide-up 0.3s ease',
+            backdropFilter:'blur(20px)',
+          }}>
+            <div style={{fontFamily:'var(--f-body)',fontWeight:600,fontSize:14,color:'var(--text)'}}>{t.msg}</div>
+          </div>
+        ))}
+      </div>
+
+      <style>{`
+        @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+      `}</style>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
