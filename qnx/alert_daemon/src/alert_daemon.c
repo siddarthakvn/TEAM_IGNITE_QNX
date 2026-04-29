@@ -4,6 +4,7 @@
  * dispatches io_daemon, applies cascade routing, forwards to
  * dashboard. Cancel paths (AI fist gesture + dashboard ACK)
  * converge on the same PULSE_ACK to io_daemon.
+ * * UPDATED: Dynamic Dashboard IP discovery and ACK-thread learning.
  */
 
 #include <stdio.h>
@@ -26,8 +27,16 @@
 #define APS_BUDGET_PERCENT      40
 #define APS_CRITICAL_BUDGET_MS  100
 
-#if ENABLE_APS
-  #include <sys/aps.h>
+/* APS partition types and SchedCtl constants were removed entirely in
+ * QNX 8.0 (_NTO_VERSION >= 800).  Only include the old header and
+ * compile the APS code-path when building against QNX 7.x. */
+#if ENABLE_APS && defined(_NTO_VERSION) && (_NTO_VERSION < 800)
+  #if defined(__has_include) && __has_include(<sys/aps.h>)
+    #include <sys/aps.h>
+  #endif
+  #define _APS_SUPPORTED 1
+#else
+  #define _APS_SUPPORTED 0
 #endif
 
 #include "gestsense.h"
@@ -36,7 +45,9 @@ static int   g_sensor_coid = -1;
 static int   g_io_coid     = -1;
 static int   g_udp_fd      = -1;
 static int   g_ack_fd      = -1;
-static char  g_dashboard_ip[64] = "127.0.0.1";
+
+/* UPDATED: Locked set to 0 to allow dynamic IP discovery from server.py */
+static char  g_dashboard_ip[64] = DASHBOARD_HOST;
 static int   g_dashboard_locked = 0;
 
 static uint64_t g_total_alerts   = 0;
@@ -72,11 +83,10 @@ static void set_prio(int prio, int policy)
     pthread_setschedparam(pthread_self(), policy, &p);
 }
 
-/*Adaptive Partitioning (QNX-exclusive)  */
-
+/* Adaptive Partitioning (QNX-exclusive) */
 static void setup_adaptive_partition(void)
 {
-#if ENABLE_APS
+#if _APS_SUPPORTED
     sched_aps_create_parms parms;
     memset(&parms, 0, sizeof(parms));
     strncpy(parms.name, "alerts", _NTO_PARTITION_NAME_LENGTH - 1);
@@ -94,11 +104,12 @@ static void setup_adaptive_partition(void)
     else
         printf("[APS] joined 'alerts' id=%d budget=%d%%\n",
                pid, parms.budget_percent);
+#else
+    printf("[APS] skipped — not supported on QNX 8.0+\n");
 #endif
 }
 
-/*minimal JSON helpers */
-
+/* minimal JSON helpers */
 static int json_get_str(const char *json, const char *key, char *out, int outlen)
 {
     char pat[64];
@@ -130,8 +141,7 @@ static double json_get_num(const char *json, const char *key, double fb)
     return atof(p);
 }
 
-/*  IPC helpers */
-
+/* IPC helpers */
 static int open_service(const char *name)
 {
     int coid = -1, retries = 0;
@@ -163,7 +173,7 @@ static int dispatch_io(const char *gesture, const char *person,
     strncpy(cmd.alert_msg, msg,     sizeof(cmd.alert_msg) - 1);
     cmd.lat       = snap->lat;
     cmd.lon       = snap->lon;
-    cmd.gps_valid = snap->gps_valid;
+    cmd.gps_synth = snap->gps_synth;
     cmd.temp      = snap->temp;
     cmd.hum       = snap->hum;
 
@@ -186,8 +196,7 @@ static void send_udp(const char *json, int len)
     sendto(g_udp_fd, json, len, 0, (struct sockaddr *)&dst, sizeof(dst));
 }
 
-/*JSON builders */
-
+/* JSON builders */
 static int build_alert_json(char *buf, int buflen,
                             const char *gesture, const char *person,
                             const char *msg, int cascade,
@@ -199,13 +208,13 @@ static int build_alert_json(char *buf, int buflen,
         "\"gesture\":\"%s\",\"person\":\"%s\",\"alert\":\"%s\","
         "\"timestamp\":%.3f,"
         "\"cascade\":%s,\"cascade_of\":\"%s\","
-        "\"lat\":%.6f,\"lon\":%.6f,\"alt\":%.1f,\"gps_valid\":%d,"
-        "\"temp\":%.1f,\"hum\":%.1f,\"gas\":%.1f,\"bme_valid\":%d}",
+        "\"lat\":%.6f,\"lon\":%.6f,\"alt\":%.1f,\"gps_synth\":%d,"
+        "\"temp\":%.1f,\"hum\":%.1f,\"gas\":%.1f,\"bme_synth\":%d}",
         gesture, person, msg, ts,
         cascade ? "true" : "false",
         cascade ? cascade_of : "",
-        snap->lat, snap->lon, snap->alt, snap->gps_valid,
-        snap->temp, snap->hum, snap->gas, snap->bme_valid);
+        snap->lat, snap->lon, snap->alt, snap->gps_synth,
+        snap->temp, snap->hum, snap->gas, snap->bme_synth);
 }
 
 static int build_cancel_json(char *buf, int buflen,
@@ -218,17 +227,15 @@ static int build_cancel_json(char *buf, int buflen,
 }
 
 /* alert pipeline */
-
 static void handle_alert(const char *json, const struct sockaddr_in *from)
 {
     uint64_t t_start = ClockCycles();
 
+    /* Learning dashboard IP from source of incoming alert (optional but helpful) */
     if (!g_dashboard_locked) {
-        inet_ntop(AF_INET, &from->sin_addr,
-                  g_dashboard_ip, sizeof(g_dashboard_ip));
+        inet_ntop(AF_INET, &from->sin_addr, g_dashboard_ip, sizeof(g_dashboard_ip));
         g_dashboard_locked = 1;
-        printf("[ALERT] dashboard locked to %s:%d\n",
-               g_dashboard_ip, DASHBOARD_PORT);
+        printf("[ALERT] dashboard locked to %s:%d\n", g_dashboard_ip, DASHBOARD_PORT);
     }
 
     char gesture[32] = "", person[16] = "", msg[96] = "";
@@ -240,39 +247,33 @@ static void handle_alert(const char *json, const struct sockaddr_in *from)
 
     printf("[ALERT] %s %s \"%s\"\n", gesture, person, msg);
 
-    /* Query sensor_daemon. If it fails, zero the snapshot and mark
-     * both domains invalid — we do NOT fabricate coordinates or
-     * environmental values. The dashboard will render them as unknown. */
     sensor_reply_t snap;
     memset(&snap, 0, sizeof(snap));
     if (query_sensor(&snap) == -1) {
         printf("[ALERT] sensor query failed — flags cleared\n");
-        snap.gps_valid = 0;
-        snap.bme_valid = 0;
+        snap.gps_synth = 0;
+        snap.bme_synth = 0;
     }
 
-    if (dispatch_io(gesture, person, msg, &snap) == -1)
-        printf("[ALERT] io_daemon dispatch failed\n");
-
     char out[1024];
-    int n = build_alert_json(out, sizeof(out), gesture, person, msg,
-                             0, "", &snap, ts);
+    int n = build_alert_json(out, sizeof(out), gesture, person, msg, 0, "", &snap, ts);
     send_udp(out, n);
 
     int cascade_count = 0;
     for (int i = 0; CASCADE_TABLE[i].primary; i++) {
         if (strcmp(CASCADE_TABLE[i].primary, gesture) != 0) continue;
         for (int k = 0; CASCADE_TABLE[i].cascade[k]; k++) {
-            n = build_alert_json(out, sizeof(out),
-                                 CASCADE_TABLE[i].cascade[k], person,
-                                 CASCADE_TABLE[i].cascade_msg[k],
-                                 1, gesture, &snap, ts);
+            n = build_alert_json(out, sizeof(out), CASCADE_TABLE[i].cascade[k], person,
+                                 CASCADE_TABLE[i].cascade_msg[k], 1, gesture, &snap, ts);
             send_udp(out, n);
             printf("[CASCADE] + %s\n", CASCADE_TABLE[i].cascade[k]);
             cascade_count++;
         }
         break;
     }
+
+    if (dispatch_io(gesture, person, msg, &snap) == -1)
+        printf("[ALERT] io_daemon dispatch failed\n");
 
     uint64_t cycles = ClockCycles() - t_start;
     uint64_t cps    = SYSPAGE_ENTRY(qtime)->cycles_per_sec;
@@ -286,8 +287,7 @@ static void handle_alert(const char *json, const struct sockaddr_in *from)
     if (ns > g_latency_max_ns) g_latency_max_ns = ns;
     pthread_mutex_unlock(&g_metrics_mtx);
 
-    printf("[ALERT] dispatched in %lu ns (cascade=%d)\n",
-           (unsigned long)ns, cascade_count);
+    printf("[ALERT] dispatched in %lu ns (cascade=%d)\n", (unsigned long)ns, cascade_count);
     fflush(stdout);
 }
 
@@ -313,8 +313,7 @@ static void handle_cancel(const char *json)
     fflush(stdout);
 }
 
-/* threads  */
-
+/* threads */
 static void *ack_thread(void *arg)
 {
     (void)arg;
@@ -323,9 +322,19 @@ static void *ack_thread(void *arg)
 
     char buf[2048];
     while (1) {
-        int n = recvfrom(g_ack_fd, buf, sizeof(buf) - 1, 0, NULL, NULL);
+        struct sockaddr_in from;
+        socklen_t sl = sizeof(from);
+        /* UPDATED: recvfrom to capture PC IP address */
+        int n = recvfrom(g_ack_fd, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&from, &sl);
         if (n <= 0) { usleep(1000); continue; }
         buf[n] = 0;
+
+        /* UPDATED: Learn the dashboard IP from the PC that clicks ACK */
+        if (!g_dashboard_locked) {
+            inet_ntop(AF_INET, &from.sin_addr, g_dashboard_ip, sizeof(g_dashboard_ip));
+            g_dashboard_locked = 1;
+            printf("[ACK] learned dashboard IP: %s\n", g_dashboard_ip);
+        }
 
         char gesture[32] = "", person[16] = "";
         json_get_str(buf, "gesture", gesture, sizeof(gesture));
@@ -336,9 +345,7 @@ static void *ack_thread(void *arg)
         if (send_ack_pulse() == -1) printf("[ACK] PULSE_ACK failed\n");
 
         char out[512];
-        int len = build_cancel_json(out, sizeof(out),
-                                    gesture[0] ? gesture : "UNKNOWN",
-                                    person, (double)time(NULL));
+        int len = build_cancel_json(out, sizeof(out), gesture[0] ? gesture : "UNKNOWN", person, (double)time(NULL));
         send_udp(out, len);
 
         pthread_mutex_lock(&g_metrics_mtx);
@@ -359,8 +366,7 @@ static void *udp_thread(void *arg)
     while (1) {
         struct sockaddr_in src;
         socklen_t sl = sizeof(src);
-        int n = recvfrom(g_udp_fd, buf, sizeof(buf) - 1, 0,
-                         (struct sockaddr *)&src, &sl);
+        int n = recvfrom(g_udp_fd, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&src, &sl);
         if (n <= 0) { usleep(1000); continue; }
         buf[n] = 0;
 
@@ -389,17 +395,14 @@ static void *metrics_thread(void *arg)
         pthread_mutex_unlock(&g_metrics_mtx);
 
         if (a > 0 || c > 0)
-            printf("[METRICS] alerts=%lu cancels=%lu cascades=%lu "
-                   "avg=%lu ns max=%lu ns\n",
-                   (unsigned long)a, (unsigned long)c, (unsigned long)csc,
-                   (unsigned long)avg, (unsigned long)mx);
+            printf("[METRICS] alerts=%lu cancels=%lu cascades=%lu avg=%lu ns max=%lu ns\n",
+                   (unsigned long)a, (unsigned long)c, (unsigned long)csc, (unsigned long)avg, (unsigned long)mx);
         fflush(stdout);
     }
     return NULL;
 }
 
-/* main*/
-
+/* main */
 static int bind_udp(int port)
 {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -432,8 +435,7 @@ int main(void)
         fprintf(stderr, "[ALERT] service connect failed\n");
         return 1;
     }
-    printf("[ALERT] %s coid=%d  %s coid=%d\n",
-           SVC_SENSOR, g_sensor_coid, SVC_IO, g_io_coid);
+    printf("[ALERT] %s coid=%d  %s coid=%d\n", SVC_SENSOR, g_sensor_coid, SVC_IO, g_io_coid);
 
     g_udp_fd = bind_udp(UDP_ALERT_PORT);
     g_ack_fd = bind_udp(ACK_PORT);
@@ -441,8 +443,7 @@ int main(void)
         perror("[ALERT] bind");
         return 1;
     }
-    printf("[ALERT] UDP :%d (alerts)  :%d (ACK)\n",
-           UDP_ALERT_PORT, ACK_PORT);
+    printf("[ALERT] UDP :%d (alerts)  :%d (ACK)\n", UDP_ALERT_PORT, ACK_PORT);
     fflush(stdout);
 
     pthread_t t_udp, t_ack, t_metrics;
