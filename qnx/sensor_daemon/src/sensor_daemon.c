@@ -34,7 +34,7 @@
 #define SAMPLE_PERIOD_SEC   3
 
 /* Latest snapshot. Starts with everything invalid until real data arrives. */
-static sensor_reply_t g_snap = { .gps_valid = 0, .bme_valid = 0 };
+static sensor_reply_t g_snap = { .gps_synth = 0, .bme_synth = 0 };  /* FIX: was gps_valid / bme_valid */
 static pthread_mutex_t g_mtx = PTHREAD_MUTEX_INITIALIZER;
 static uint8_t g_bme_addr = 0;
 
@@ -139,7 +139,7 @@ static void *bme_thread(void *arg)
     int fd = bme_detect();
     if (fd < 0) {
         printf("[SENSOR] BME688 not detected — environmental data unavailable\n");
-        /* Leave bme_valid=0; retry every 30s in case it comes back */
+        /* Leave bme_synth=0; retry every 30s in case it comes back */
         while (1) {
             sleep(30);
             fd = bme_detect();
@@ -198,7 +198,7 @@ static void *bme_thread(void *arg)
         g_snap.temp = tc;
         g_snap.hum  = hum;
         g_snap.gas  = gas;
-        g_snap.bme_valid = gas_ok;
+        g_snap.bme_synth = gas_ok;   /* FIX: was bme_valid */
         pthread_mutex_unlock(&g_mtx);
 
         printf("[SENSOR] BME688 %.1f°C %.1f%%RH %.1fkΩ\n", tc, hum, gas);
@@ -244,7 +244,7 @@ static void gnss_parse(const char *line)
     g_snap.lon = lon;
     g_snap.alt = alt;
     g_snap.sats = atoi(f[7]);
-    g_snap.gps_valid = 1;
+    g_snap.gps_synth = 1;           /* FIX: was gps_valid */
     pthread_mutex_unlock(&g_mtx);
 
     printf("[SENSOR] GPS fix %.6f,%.6f alt=%.1fm sats=%d\n",
